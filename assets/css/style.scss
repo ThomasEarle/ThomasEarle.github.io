@@ -1,0 +1,10 @@
+---
+---
+
+@import 'jekyll-theme-hacker';
+
+/* Increase center column */
+.container { width: 90%; max-width: 800px; margin: 0 auto; }
+
+/* Replace ./ with /$ before h1 titles */
+header h1:before { content: "\002F\0024\0020"; font-size: 24px; }

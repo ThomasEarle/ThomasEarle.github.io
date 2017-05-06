@@ -1,1 +1,25 @@
-theme: jekyll-theme-midnight
+#Site Settings
+title: journalctl -r -u ThomasEarle
+email: ThomasREarle@gmail.com
+description: >
+  Hello, I'm a recent information security graduate and amateur Internet historian.  Below are a collection of projects and insights that I thought some would find useful.
+baseurl: ""
+url: ""
+github_username: ThomasEarle
+
+#Build Settings
+markdown: kramdown
+input: GFM
+auto_ids: true
+hard_wrap: false
+future: true
+syntax_highlighter: rouge
+entity_output: as_char
+smart_quotes: lsquo, rsquo, ldquo, rdquo
+footnote_nr: 1
+theme: jekyll-theme-hacker
+gems:
+  - jekyll-feed
+exclude:
+  - Gemfile
+  - Gemfile.lock
